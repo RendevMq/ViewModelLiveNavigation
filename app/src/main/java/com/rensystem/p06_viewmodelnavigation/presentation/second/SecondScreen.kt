@@ -21,7 +21,6 @@ import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
@@ -43,9 +42,8 @@ fun SecondScreen(
 ) {
 
     val bgColor = Color(0xFF5C1515)
-    val data by secondScreenViewModel.exampleData.collectAsState()
-    val isLoading by secondScreenViewModel.isLoading.collectAsState()
-    val error by secondScreenViewModel.errorMessage.collectAsState()
+    // Recolecta el único objeto de estado
+    val uiState by secondScreenViewModel.uiState.collectAsState()
 
     val userStatus by secondScreenViewModel.userStatus.collectAsState()
 
@@ -53,7 +51,8 @@ fun SecondScreen(
 //    LaunchedEffect(Unit) {
 //        secondScreenViewModel.loadExampleData()
 //    }
-    // --- ¡AQUÍ ESTÁ EL CAMBIO! ---
+
+
     // Reemplaza LaunchedEffect por DisposableEffect
     DisposableEffect(Unit) {
         // 1. "On Enter"
@@ -131,16 +130,16 @@ fun SecondScreen(
                 modifier = Modifier.fillMaxSize(),
                 contentAlignment = Alignment.Center
             ) {
-                when {
-                    isLoading -> {
+                when (val state = uiState) {
+                    is SecondScreenUiState.Loading -> {
                         CircularProgressIndicator()
                     }
-                    error != null -> Text("Error: $error")
-                    else -> {
+                    is SecondScreenUiState.Error -> Text("Error: $state.message")
+                    is SecondScreenUiState.Success -> {
                         LazyColumn(
                             verticalArrangement = Arrangement.spacedBy(16.dp)
                         ) {
-                            items(data) {
+                            items(state.data) {
                                 Text(
                                     text = it,
                                     style = MaterialTheme.typography.bodyLarge,
@@ -148,6 +147,9 @@ fun SecondScreen(
                                 )
                             }
                         }
+                    }
+                    is SecondScreenUiState.Idle -> {
+                        // Estado inicial: no muestra nada, o un placeholder
                     }
                 }
             }
