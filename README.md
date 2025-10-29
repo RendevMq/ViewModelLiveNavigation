@@ -12,8 +12,9 @@ Esta aplicación demuestra una arquitectura de UI moderna y robusta, resolviendo
 * **Manejo Personalizado de "Atrás":** Intercepta el botón "Atrás" del sistema para implementar lógica condicional (Modo `HISTORY` vs. Modo `CONFIRM_EXIT`), asegurando una experiencia de usuario predecible.
 * **Resolución de Prioridad de `BackHandler`:** Soluciona el problema de "carrera" entre el `BackHandler` del `NavHost` y nuestro `BackHandler` personalizado, controlando el orden de composición (LIFO).
 * **ViewModel con Scope Elevado (Scoped ViewModel):** Mantiene un `ViewModel` (`SecondScreenViewModel`) vivo a nivel del `RootNavGraph` para persistir el estado (caché de datos) mientras se navega entre pestañas.
+* **Gestión de Estado de UI (UI State Pattern):** Utiliza una `sealed class` (`SecondScreenUiState`) para consolidar los estados de `isLoading`, `data` y `error` en un solo objeto, eliminando estados imposibles y simplificando la UI.
 * **Carga de Datos "Lazy" y Cancelación:** Utiliza `DisposableEffect` para iniciar la carga de datos solo cuando la pantalla es visible (`onEnter`) y **cancela automáticamente las llamadas de red en curso** si el usuario abandona la pantalla antes de que terminen (`onDispose`).
-* **Optimización de Caché por Tiempo:** Implementa una lógica de "keep-alive" que mantiene los datos en caché durante 10 segundos después de salir de la pantalla, liberando la memoria si el usuario no regresa a tiempo.
+* **Optimización de Caché por Tiempo:** Implementa una lógica de "keep-alive" que mantiene los datos en caché durante 60 segundos después de salir de la pantalla, liberando la memoria si el usuario no regresa a tiempo.
 * **Optimización de Caché por Flujo (Flow-Based):** Implementa un "Composable de control" (`SecondScreenCacheInvalidator`) que escucha al `rootNavController` y **vacía el caché inmediatamente** si el usuario navega a un flujo de detalle completamente diferente (ej. de la Pestaña 3).
 * **Separación de Lógica:** Abstrae toda la lógica de control (manejo de "atrás", invalidación de caché) en Composables no visuales (`MainScreenBackHandler`, `SecondScreenCacheInvalidator`) para mantener los componentes de UI (`MainScreen`, `RootNavGraph`) limpios.
 
@@ -151,7 +152,7 @@ fun MainScreen( /* ... */ ) {
 
 ---
 
-## (NUEVO) 🧠 Gestión Avanzada de ViewModel y Caché
+## 🧠 Gestión Avanzada de ViewModel y Caché
 
 Para persistir los datos de `SecondScreen` al cambiar de pestaña, elevamos el *scope* (alcance) de su `SecondScreenViewModel` al `RootNavGraph`. Esto introdujo nuevos desafíos de optimización.
 
@@ -172,17 +173,51 @@ DisposableEffect(Unit) {
     }
 }
 ```
-El `ViewModel` (`SecondScreenViewModel`) implementa esta lógica:
-* `loadExampleData()`: Tiene una guarda para no volver a cargar si los datos ya existen.
-* `onScreenDisposed()`: **Cancela la corrutina de red (`loadJob`)** si el usuario se va *antes* de que termine la carga de 2 segundos.
 
-### 2. Optimización 1: Invalidación de Caché por Tiempo (Timeout)
-
-* **Problema:** El `ViewModel` al nivel `Root` nunca muere, por lo que los datos de `SecondScreen` (el caché) viven en RAM para siempre, incluso si el usuario nunca vuelve.
-* **Solución:** Iniciar un temporizador de 60 segundos en `onScreenDisposed()`. Si el usuario no vuelve en ese tiempo, se limpia el caché para liberar RAM.
+### 2. Optimización 1: Refactorización a un `UiState`
+* **Problema:** Manejar múltiples `StateFlow` (`isLoading`, `errorMessage`, `data`) es propenso a errores y puede crear "estados imposibles" (ej. `isLoading = true` y `errorMessage != null`).
+* **Solución:** Consolidar todos los estados de la pantalla en una única `sealed class` (`SecondScreenUiState`).
 
 ```kotlin
-// En SecondScreenViewModel.kt
+// En SecondScreenUiState.kt
+sealed class SecondScreenUiState {
+    object Idle : SecondScreenUiState()
+    object Loading : SecondScreenUiState()
+    data class Success(val data: List<String>) : SecondScreenUiState()
+    data class Error(val message: String) : SecondScreenUiState()
+}
+
+// En SecondScreen.kt (ahora mucho más limpio)
+@Composable
+fun SecondScreen(
+    /* ... */
+    viewModel: SecondScreenViewModel
+) {
+    // Solo recolectamos un estado
+    val uiState by viewModel.uiState.collectAsState()
+    
+    // El DisposableEffect no cambia...
+    DisposableEffect(Unit) { /* ... */ }
+
+    // El 'when' maneja todos los casos
+    Box(modifier = Modifier.fillMaxSize()) {
+        when (val state = uiState) {
+            is SecondScreenUiState.Loading -> CircularProgressIndicator()
+            is SecondScreenUiState.Error -> Text("Error: ${state.message}")
+            is SecondScreenUiState.Success -> LazyColumn { /* ... */ }
+            is SecondScreenUiState.Idle -> { /* No muestra nada */ }
+        }
+    }
+}
+```
+
+### 3. Optimización 2: Invalidación de Caché por Tiempo (Timeout)
+
+* **Problema:** El `ViewModel` al nivel `Root` nunca muere, por lo que los datos de `SecondScreen` (el caché) viven en RAM para siempre, incluso si el usuario nunca vuelve.
+* **Solución:** Iniciar un temporizador de 60 segundos en `onScreenDisposed()`. Si el usuario no vuelve en ese tiempo, se resetea el `UiState` a `Idle` para liberar la memoria.
+
+```kotlin
+// En SecondScreenViewModel.kt (actualizado con UiState)
 private var clearCacheJob: Job? = null
 private val CACHE_TIMEOUT_MS = 60_000L
 
@@ -190,14 +225,15 @@ fun onScreenDisposed() {
     // 1. Cancela la carga de red si está activa
     if (loadJob?.isActive == true) {
         loadJob?.cancel()
-        _isLoading.value = false
+        _uiState.value = SecondScreenUiState.Idle // Resetea el estado
     }
 
     // 2. Inicia el temporizador para limpiar el caché
-    if (_exampleData.value.isNotEmpty()) {
+    if (_uiState.value is SecondScreenUiState.Success) {
         clearCacheJob = viewModelScope.launch {
             delay(CACHE_TIMEOUT_MS) 
-            _exampleData.value = emptyList() // Libera la RAM
+            _uiState.value = SecondScreenUiState.Idle // Resetea y libera RAM
+            loadJob = null
         }
     }
 }
@@ -205,11 +241,16 @@ fun onScreenDisposed() {
 fun loadExampleData() {
     // 3. Si el usuario vuelve, cancela el temporizador de limpieza
     clearCacheJob?.cancel()
-    // ... (continúa con la lógica de carga) ...
+    
+    // Guardas: si ya hay éxito o ya está cargando, no hacer nada
+    if (_uiState.value is SecondScreenUiState.Success) return
+    if (_uiState.value is SecondScreenUiState.Loading) return
+
+    // ... (iniciar el 'loadJob' que emite Loading, Success o Error) ...
 }
 ```
 
-### 3. Optimización 2: Invalidación de Caché por Flujo de Navegación
+### 4. Optimización 3: Invalidación de Caché por Flujo de Navegación
 
 * **Problema:** ¿Qué pasa si el usuario está en `SecondScreen`, se va a `ThirdScreen` y luego navega al detalle `ThirdDetail1`? El caché de 60 segundos de `SecondScreen` sigue activo, ocupando RAM sin sentido, ya que el usuario está en un flujo completamente diferente.
 * **Solución:** Hacer que el `ViewModel` escuche al `rootNavController`. Si el usuario navega a una ruta que *no* pertenece al "flujo de `SecondScreen`", se debe limpiar el caché **inmediatamente**.
@@ -257,5 +298,13 @@ fun SecondScreenCacheInvalidator(
         rootNavController.addOnDestinationChangedListener(listener)
         onDispose { rootNavController.removeOnDestinationChangedListener(listener) }
     }
+}
+
+// En SecondScreenViewModel.kt (la función que es llamada)
+fun clearCacheImmediately() {
+    clearCacheJob?.cancel()
+    loadJob?.cancel()
+    _uiState.value = SecondScreenUiState.Idle // Resetea el estado inmediatamente
+    loadJob = null
 }
 ```
