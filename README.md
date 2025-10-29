@@ -16,6 +16,7 @@ Esta aplicación demuestra una arquitectura de UI moderna y robusta, resolviendo
 * **Carga de Datos "Lazy" y Cancelación:** Utiliza `DisposableEffect` para iniciar la carga de datos solo cuando la pantalla es visible (`onEnter`) y **cancela automáticamente las llamadas de red en curso** si el usuario abandona la pantalla antes de que terminen (`onDispose`).
 * **Optimización de Caché por Tiempo:** Implementa una lógica de "keep-alive" que mantiene los datos en caché durante 60 segundos después de salir de la pantalla, liberando la memoria si el usuario no regresa a tiempo.
 * **Optimización de Caché por Flujo (Flow-Based):** Implementa un "Composable de control" (`SecondScreenCacheInvalidator`) que escucha al `rootNavController` y **vacía el caché inmediatamente** si el usuario navega a un flujo de detalle completamente diferente (ej. de la Pestaña 3).
+* **Eficiencia de Recursos:** La lógica de caché no solo resetea el estado de la UI, sino que también **cancela la recolección del `Flow` (`loadJob`)** para detener la escucha de la base de datos y liberar recursos.
 * **Separación de Lógica:** Abstrae toda la lógica de control (manejo de "atrás", invalidación de caché) en Composables no visuales (`MainScreenBackHandler`, `SecondScreenCacheInvalidator`) para mantener los componentes de UI (`MainScreen`, `RootNavGraph`) limpios.
 
 ---
@@ -173,6 +174,27 @@ DisposableEffect(Unit) {
     }
 }
 ```
+### Nota de Arquitectura: ¿Por qué no "matar" el ViewModel?
+
+Una pregunta clave es: ¿por qué no "matamos" el `SecondScreenViewModel` para liberar recursos, en lugar de solo cancelar `Job`s?
+
+**Respuesta: No podemos, y no queremos.**
+
+1.  **La Razón Técnica (No Podemos):** El ciclo de vida (`scope`) del `ViewModel` está atado al `RootNavGraph` (vía `hiltViewModel()`). Mientras el `RootNavGraph` viva (es decir, mientras la app esté abierta), el `ViewModel` **no puede ser destruido**.
+2.  **La Razón de Arquitectura (No Queremos):** El `SecondScreenViewModel` maneja **dos** tipos de estado:
+    * `_uiState` (los datos cargados): Queremos que se libere.
+    * `_userStatus` (el `Switch` ON/OFF): Queremos que sea **persistente** mientras el usuario navega.
+
+> **Analogía: El Trabajador vs. La Tarea**
+> * El `ViewModel` es el **Trabajador**.
+> * El `_userStatus` es su **Tarjeta de Fichaje** (algo personal y persistente).
+> * El `_uiState` (los datos) y el `loadJob` (el `collect`) son la **Tarea y los Materiales**.
+>
+> "Matar" al `ViewModel` sería como **despedir al trabajador**, lo que causaría que pierda su tarjeta de fichaje (`_userStatus`).
+>
+> Nuestra solución (`clearCacheImmediately()`) es la correcta: le decimos al trabajador que **"detenga la tarea y limie los materiales"** (cancela los `Job`s y resetea `_uiState` a `Idle`).
+>
+> De esta forma, liberamos todos los recursos pesados (datos en RAM, recolección de `Flow`) pero mantenemos al trabajador (`ViewModel`) listo para su estado persistente (`_userStatus`) y para empezar una nueva tarea (`loadExampleData()`) si el usuario regresa.
 
 ### 2. Optimización 1: Refactorización a un `UiState`
 * **Problema:** Manejar múltiples `StateFlow` (`isLoading`, `errorMessage`, `data`) es propenso a errores y puede crear "estados imposibles" (ej. `isLoading = true` y `errorMessage != null`).
