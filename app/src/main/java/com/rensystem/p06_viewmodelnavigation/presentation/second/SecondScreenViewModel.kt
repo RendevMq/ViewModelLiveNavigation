@@ -79,8 +79,9 @@ class SecondScreenViewModel @Inject constructor(
      * cuando la pantalla se destruya.
      */
     fun onScreenDisposed() {
+        // Regla 1: Cancelación INMEDIATA si está cargando (sin cambios)
         // Si el trabajo sigue activo (no ha terminado ni fallado)...
-        if (loadJob?.isActive == true) {
+        if (loadJob?.isActive == true && _uiState.value is SecondScreenUiState.Loading) {
             // ¡Cancélalo!
             loadJob?.cancel()
             _uiState.value = SecondScreenUiState.Idle // Resetear estado
@@ -92,12 +93,16 @@ class SecondScreenViewModel @Inject constructor(
             clearCacheJob = viewModelScope.launch {
                 delay(CACHE_TIMEOUT_MS) // Espera 60 segundos
 
-                // Pasado el tiempo, el usuario no volvió.
+                // 1. Detén la recolección del Flow de la BD para liberar recursos.
+                loadJob?.cancel()
+
+                // 2. Pasado el tiempo, el usuario no volvió.
                 // Vaciamos los datos para liberar RAM.
-                _uiState.value = SecondScreenUiState.Idle // Resetear estado
+                _uiState.value = SecondScreenUiState.Idle // Resetear estado,Resetea la UI a Idle.
 
                 // Reseteamos el loadJob para que la próxima
                 // vez que el usuario entre, vuelva a cargar.
+                // 3. Limpia la referencia al job.
                 loadJob = null
             }
         }
